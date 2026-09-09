@@ -19,11 +19,14 @@ else
     DATA_DIR="/usr/local/share/dlog"
 fi
 
-# ── LUT 预设 ───────────────────────────────────────────
-# vivid  = 鲜艳模式 (默认)
-# std    = 标准 D-Log to Rec.709
-# dlogm  = D-Log M to Rec.709
-KNOWN_PRESETS="vivid std dlogm"
+# ── LUT 预设映射表 ─────────────────────────────────────
+# 格式: "简称|文件名" (每行一条, 文件存放在 DATA_DIR 中)
+# 修改此表即可增删预设, 无需改其他代码
+LUT_MAP="
+vivid|DJI Mavic 4 Pro D-Log to Rec.709 vivid V1.cube
+std|DJI Mavic 4 Pro D-Log to Rec.709 V1.cube
+dlogm|DJI Mavic 4 Pro D-Log M to Rec.709 V1.cube
+"
 DEFAULT_PRESET="vivid"
 
 # ── 默认参数 ────────────────────────────────────────────
@@ -132,112 +135,74 @@ fi
 
 # ── 列出 LUT 文件 ──────────────────────────────────────
 if $LIST_LUTS; then
-    echo -e "${BOLD}已安装的 LUT 文件:${NC}"
+    echo -e "${BOLD}LUT 预设:${NC}"
     echo ""
-    found=false
-    for dir in "$DATA_DIR" "$SCRIPT_DIR"; do
-        [[ -d "$dir" ]] || continue
-        while IFS= read -r -d '' f; do
-            found=true
-            base="$(basename "$f")"
-            # 判断属于哪个预设
-            tag=""
-            if [[ "$base" == *vivid* ]]; then
-                tag="${GREEN}vivid${NC}"
-            elif [[ "$base" == *"D-Log M"* ]]; then
-                tag="${CYAN}dlogm${NC}"
-            elif [[ "$base" == *"D-Log"* ]]; then
-                tag="${BLUE}std${NC}"
-            fi
-            printf "  %-8b %s\n" "[$tag]" "$base"
-        done < <(find "$dir" -maxdepth 1 -name "*.cube" -print0 2>/dev/null | sort -z)
+    echo "$LUT_MAP" | while IFS='|' read -r key filename; do
+        key="$(echo "$key" | tr -d ' ')"
+        [[ -z "$key" ]] && continue
+        # 检查文件是否存在
+        if [[ -f "$DATA_DIR/$filename" ]] || [[ -f "$SCRIPT_DIR/$filename" ]]; then
+            status="${GREEN}✓${NC}"
+        else
+            status="${RED}✗${NC}"
+        fi
+        default_mark=""
+        [[ "$key" == "$DEFAULT_PRESET" ]] && default_mark=" ${DIM}(默认)${NC}"
+        printf "  %b %-8s %s%b\n" "$status" "$key" "$filename" "$default_mark"
     done
-    if ! $found; then
-        warn "未找到 LUT 文件"
-        info "请从 https://www.dji.com/lut 下载后放到 $DATA_DIR/"
-    fi
+    echo ""
+    info "LUT 目录: $DATA_DIR/"
     exit 0
 fi
 
 # ── 查找 LUT 文件 ──────────────────────────────────────
-# 按预设在目录中匹配 LUT (结果写入 LUT_PATH)
-search_lut_in_dir() {
-    local dir="$1" preset="$2"
-    [[ -d "$dir" ]] || return 1
-
-    local f base
-    for f in "$dir"/*.cube; do
-        [[ -f "$f" ]] || continue
-        base="$(basename "$f")"
-        case "$preset" in
-            vivid)
-                if [[ "$base" == *vivid* ]]; then
-                    LUT_PATH="$f"; return 0
-                fi
-                ;;
-            std)
-                if [[ "$base" == *"D-Log to Rec.709"* ]] && \
-                   [[ "$base" != *vivid* ]] && \
-                   [[ "$base" != *"D-Log M"* ]]; then
-                    LUT_PATH="$f"; return 0
-                fi
-                ;;
-            dlogm)
-                if [[ "$base" == *"D-Log M"* ]]; then
-                    LUT_PATH="$f"; return 0
-                fi
-                ;;
-            any)
-                LUT_PATH="$f"; return 0
-                ;;
-        esac
+# 从映射表中查找预设对应的文件名
+get_lut_filename() {
+    local preset="$1"
+    echo "$LUT_MAP" | while IFS='|' read -r key filename; do
+        key="$(echo "$key" | tr -d ' ')"
+        [[ "$key" == "$preset" ]] && echo "$filename" && return 0
     done
-    return 1
 }
 
-resolve_lut() {
-    local preset="${1:-$DEFAULT_PRESET}"
-
-    # 1. --lut 直接指定
-    if [[ -n "$LUT_FILE" ]]; then
-        if [[ ! -f "$LUT_FILE" ]]; then
-            err "LUT 文件不存在: $LUT_FILE"
-            exit 1
-        fi
-        LUT_PATH="$(cd "$(dirname "$LUT_FILE")" && pwd)/$(basename "$LUT_FILE")"
-        return
-    fi
-
-    # 2. 按预设查找 (DATA_DIR 优先，再找 SCRIPT_DIR)
-    if search_lut_in_dir "$DATA_DIR" "$preset"; then return; fi
-    if search_lut_in_dir "$SCRIPT_DIR" "$preset"; then return; fi
-
-    # 3. fallback 到任意可用 LUT
-    if [[ "$preset" != "any" ]]; then
-        warn "未找到 '$preset' 预设的 LUT，尝试其他..."
-        if search_lut_in_dir "$DATA_DIR" "any"; then return; fi
-        if search_lut_in_dir "$SCRIPT_DIR" "any"; then return; fi
-    fi
-
-    err "未找到 LUT 文件"
-    err "请从 https://www.dji.com/lut 下载 .cube 文件放到 $DATA_DIR/"
-    exit 1
+# 列出所有已知预设名
+get_preset_names() {
+    echo "$LUT_MAP" | while IFS='|' read -r key filename; do
+        key="$(echo "$key" | tr -d ' ')"
+        [[ -n "$key" ]] && echo "$key"
+    done
 }
 
-# 验证预设名
-if [[ -n "$LUT_PRESET" ]]; then
-    valid=false
-    for p in $KNOWN_PRESETS; do
-        [[ "$p" == "$LUT_PRESET" ]] && valid=true
-    done
-    if ! $valid; then
-        err "未知预设: $LUT_PRESET"
-        info "可用预设: vivid, std, dlogm"
+if [[ -n "$LUT_FILE" ]]; then
+    # --lut 直接指定
+    if [[ ! -f "$LUT_FILE" ]]; then
+        err "LUT 文件不存在: $LUT_FILE"
+        exit 1
+    fi
+    LUT_PATH="$(cd "$(dirname "$LUT_FILE")" && pwd)/$(basename "$LUT_FILE")"
+else
+    # 按预设查找
+    preset="${LUT_PRESET:-$DEFAULT_PRESET}"
+    lut_name="$(get_lut_filename "$preset" || true)"
+
+    if [[ -z "$lut_name" ]]; then
+        err "未知预设: $preset"
+        info "可用预设: $(get_preset_names | tr '\n' ' ')"
+        exit 1
+    fi
+
+    # 在 DATA_DIR 和 SCRIPT_DIR 中查找
+    if [[ -f "$DATA_DIR/$lut_name" ]]; then
+        LUT_PATH="$DATA_DIR/$lut_name"
+    elif [[ -f "$SCRIPT_DIR/$lut_name" ]]; then
+        LUT_PATH="$SCRIPT_DIR/$lut_name"
+    else
+        err "LUT 文件不存在: $lut_name"
+        err "请将该文件放到 $DATA_DIR/ 或运行 make install-user 重新安装"
+        err "下载地址: https://www.dji.com/lut"
         exit 1
     fi
 fi
-
-resolve_lut "${LUT_PRESET:-$DEFAULT_PRESET}"
 info "LUT: $(basename "$LUT_PATH")"
 
 # ── 无参数时：自动扫描当前目录 _D 视频 ─────────────────
