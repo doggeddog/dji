@@ -5,18 +5,12 @@
 # 将灰蒙蒙的 D-Log / D-Log M 视频转换为 Rec.709 标准色彩。
 # 基于 ffmpeg + 3D LUT，支持 macOS 硬件加速编码。
 #
-# 用法:
-#   dlog                                # 转换当前目录下所有 _D 视频
-#   dlog DJI_001_D.MP4                  # 转换指定文件
-#   dlog -c h264 *.MP4                  # 指定 H.264 编码
-#   dlog --lut custom.cube *.MP4        # 使用自定义 LUT
-#
 set -eo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# LUT 搜索目录 (优先级: 环境变量 > ~/.local > /usr/local > 脚本目录)
+# LUT 搜索目录
 if [[ -n "${DLOG_DATA_DIR:-}" ]]; then
     DATA_DIR="$DLOG_DATA_DIR"
 elif [[ -d "$HOME/.local/share/dlog" ]]; then
@@ -25,17 +19,26 @@ else
     DATA_DIR="/usr/local/share/dlog"
 fi
 
+# ── LUT 预设 ───────────────────────────────────────────
+# vivid  = 鲜艳模式 (默认)
+# std    = 标准 D-Log to Rec.709
+# dlogm  = D-Log M to Rec.709
+KNOWN_PRESETS="vivid std dlogm"
+DEFAULT_PRESET="vivid"
+
 # ── 默认参数 ────────────────────────────────────────────
 CODEC="h265"
 QUALITY=22
 BITRATE=""
 LUT_FILE=""
+LUT_PRESET=""
 OUTPUT_DIR=""
 SUFFIX="_rec709"
 DRY_RUN=false
 OVERWRITE=false
 PARALLEL=1
 VERBOSE=false
+LIST_LUTS=false
 
 # ── 颜色输出 ────────────────────────────────────────────
 RED='\033[0;31m'
@@ -43,6 +46,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+DIM='\033[2m'
 BOLD='\033[1m'
 NC='\033[0m'
 
@@ -56,46 +60,42 @@ usage() {
     cat <<EOF
 dlog v${VERSION} — DJI D-Log 视频色彩转换工具
 
-将灰蒙蒙的 D-Log / D-Log M 视频转换为 Rec.709 标准色彩。
-
 用法:
-  dlog                                  # 转换当前目录下所有 _D 视频
-  dlog <文件...>                        # 转换指定文件
-  dlog [选项] <文件或目录...>           # 带选项转换
+  dlog                            转换当前目录所有 _D 视频 (默认 vivid)
+  dlog <文件...>                  转换指定文件
+  dlog -l std <文件...>           用标准 LUT 转换
+  dlog -l dlogm <文件...>        用 D-Log M LUT 转换
+
+LUT 预设:                                        快捷参数
+  vivid    鲜艳模式，色彩饱和对比高 (默认)        -l vivid
+  std      标准模式，色彩自然准确                  -l std
+  dlogm    D-Log M 专用转换                       -l dlogm
 
 选项:
-  -c, --codec <h264|h265|prores>  输出编码 (默认: h265)
-  -q, --quality <数字>             质量 (默认: 22, 越小越好, 18=高质量)
-  -b, --bitrate <码率>             固定码率, 如 30M
-  --lut <文件.cube>                使用自定义 LUT 文件
-  -o, --output-dir <目录>          输出目录 (默认: 源文件同目录)
-  -s, --suffix <后缀>              输出后缀 (默认: _rec709)
-  -j, --parallel <数>              并行数 (默认: 1)
-  -y, --overwrite                  覆盖已有文件
-  -n, --dry-run                    仅预览，不实际转换
-  -v, --verbose                    显示 ffmpeg 详细输出
-  -V, --version                    显示版本
-  -h, --help                       显示帮助
-
-编码:
-  h265     更小文件，画质好 (默认, macOS 硬件加速)
-  h264     兼容性最好 (macOS 硬件加速)
-  prores   ProRes 422 HQ 专业格式
+  -l, --look <预设>          LUT 预设 (vivid/std/dlogm, 默认: vivid)
+  --lut <文件.cube>          使用自定义 LUT 文件
+  --list                     列出可用的 LUT 文件
+  -c, --codec <编码>         h264/h265/prores (默认: h265)
+  -q, --quality <数字>       质量 (默认: 22, 越小越好)
+  -b, --bitrate <码率>       固定码率, 如 30M
+  -o, --output-dir <目录>    输出目录
+  -s, --suffix <后缀>        输出后缀 (默认: _rec709)
+  -j, --parallel <数>        并行数 (默认: 1)
+  -y, --overwrite            覆盖已有文件
+  -n, --dry-run              仅预览
+  -v, --verbose              详细输出
+  -V, --version              版本
+  -h, --help                 帮助
 
 示例:
-  dlog                                  # 最简用法，自动找 _D 视频
-  dlog DJI_001_D.MP4                    # 转换单个文件
-  dlog -c h264 -q 18 *.MP4             # H.264 高质量批量转换
-  dlog --lut Mavic4Pro.cube *.MP4       # 自定义 LUT
-  dlog -o ./output -j 2 *.MP4          # 输出到指定目录，2路并行
+  dlog                            # 自动找 _D 视频，vivid 模式
+  dlog -l std *.MP4               # 标准模式批量转换
+  dlog -l dlogm DJI_001_D.MP4    # D-Log M 转换
+  dlog -c h264 -q 18 *.MP4       # H.264 高质量
+  dlog --lut custom.cube *.MP4    # 自定义 LUT
+  dlog --list                     # 查看已安装的 LUT
 
-LUT 文件查找顺序:
-  1. --lut 参数指定的文件
-  2. ${DATA_DIR}/ 下的官方 .cube 文件
-  3. 脚本目录下的官方 .cube 文件
-  4. 内置通用 dlog_m_to_rec709.cube
-
-添加官方 LUT: 将 .cube 文件放到 ${DATA_DIR}/ 即可自动识别
+LUT 目录: ${DATA_DIR}/
 下载地址: https://www.dji.com/lut
 EOF
 }
@@ -105,10 +105,12 @@ INPUTS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -l|--look)       LUT_PRESET="$2"; shift 2 ;;
+        --lut)           LUT_FILE="$2"; shift 2 ;;
+        --list)          LIST_LUTS=true; shift ;;
         -c|--codec)      CODEC="$2"; shift 2 ;;
         -q|--quality)    QUALITY="$2"; shift 2 ;;
         -b|--bitrate)    BITRATE="$2"; shift 2 ;;
-        --lut)           LUT_FILE="$2"; shift 2 ;;
         -o|--output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         -s|--suffix)     SUFFIX="$2"; shift 2 ;;
         -j|--parallel)   PARALLEL="$2"; shift 2 ;;
@@ -128,45 +130,122 @@ if ! command -v ffmpeg &>/dev/null; then
     exit 1
 fi
 
+# ── 列出 LUT 文件 ──────────────────────────────────────
+if $LIST_LUTS; then
+    echo -e "${BOLD}已安装的 LUT 文件:${NC}"
+    echo ""
+    found=false
+    for dir in "$DATA_DIR" "$SCRIPT_DIR"; do
+        [[ -d "$dir" ]] || continue
+        while IFS= read -r -d '' f; do
+            found=true
+            base="$(basename "$f")"
+            # 判断属于哪个预设
+            tag=""
+            if [[ "$base" == *vivid* ]]; then
+                tag="${GREEN}vivid${NC}"
+            elif [[ "$base" == *"D-Log M"* ]]; then
+                tag="${CYAN}dlogm${NC}"
+            elif [[ "$base" == *"D-Log"* ]]; then
+                tag="${BLUE}std${NC}"
+            fi
+            printf "  %-8b %s\n" "[$tag]" "$base"
+        done < <(find "$dir" -maxdepth 1 -name "*.cube" -print0 2>/dev/null | sort -z)
+    done
+    if ! $found; then
+        warn "未找到 LUT 文件"
+        info "请从 https://www.dji.com/lut 下载后放到 $DATA_DIR/"
+    fi
+    exit 0
+fi
+
+# ── 查找 LUT 文件 ──────────────────────────────────────
+# 按预设在目录中匹配 LUT (结果写入 LUT_PATH)
+search_lut_in_dir() {
+    local dir="$1" preset="$2"
+    [[ -d "$dir" ]] || return 1
+
+    local f base
+    for f in "$dir"/*.cube; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"
+        case "$preset" in
+            vivid)
+                if [[ "$base" == *vivid* ]]; then
+                    LUT_PATH="$f"; return 0
+                fi
+                ;;
+            std)
+                if [[ "$base" == *"D-Log to Rec.709"* ]] && \
+                   [[ "$base" != *vivid* ]] && \
+                   [[ "$base" != *"D-Log M"* ]]; then
+                    LUT_PATH="$f"; return 0
+                fi
+                ;;
+            dlogm)
+                if [[ "$base" == *"D-Log M"* ]]; then
+                    LUT_PATH="$f"; return 0
+                fi
+                ;;
+            any)
+                LUT_PATH="$f"; return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+resolve_lut() {
+    local preset="${1:-$DEFAULT_PRESET}"
+
+    # 1. --lut 直接指定
+    if [[ -n "$LUT_FILE" ]]; then
+        if [[ ! -f "$LUT_FILE" ]]; then
+            err "LUT 文件不存在: $LUT_FILE"
+            exit 1
+        fi
+        LUT_PATH="$(cd "$(dirname "$LUT_FILE")" && pwd)/$(basename "$LUT_FILE")"
+        return
+    fi
+
+    # 2. 按预设查找 (DATA_DIR 优先，再找 SCRIPT_DIR)
+    if search_lut_in_dir "$DATA_DIR" "$preset"; then return; fi
+    if search_lut_in_dir "$SCRIPT_DIR" "$preset"; then return; fi
+
+    # 3. fallback 到任意可用 LUT
+    if [[ "$preset" != "any" ]]; then
+        warn "未找到 '$preset' 预设的 LUT，尝试其他..."
+        if search_lut_in_dir "$DATA_DIR" "any"; then return; fi
+        if search_lut_in_dir "$SCRIPT_DIR" "any"; then return; fi
+    fi
+
+    err "未找到 LUT 文件"
+    err "请从 https://www.dji.com/lut 下载 .cube 文件放到 $DATA_DIR/"
+    exit 1
+}
+
+# 验证预设名
+if [[ -n "$LUT_PRESET" ]]; then
+    valid=false
+    for p in $KNOWN_PRESETS; do
+        [[ "$p" == "$LUT_PRESET" ]] && valid=true
+    done
+    if ! $valid; then
+        err "未知预设: $LUT_PRESET"
+        info "可用预设: vivid, std, dlogm"
+        exit 1
+    fi
+fi
+
+resolve_lut "${LUT_PRESET:-$DEFAULT_PRESET}"
+info "LUT: $(basename "$LUT_PATH")"
+
 # ── 无参数时：自动扫描当前目录 _D 视频 ─────────────────
 if [[ ${#INPUTS[@]} -eq 0 ]]; then
     INPUTS=(".")
     AUTO_MODE=true
 else
     AUTO_MODE=false
-fi
-
-# ── 查找 LUT 文件 ──────────────────────────────────────
-# 在指定目录中查找官方 LUT (非内置的 .cube 文件)
-find_official_lut() {
-    local dir="$1"
-    [[ -d "$dir" ]] || return 1
-    while IFS= read -r -d '' cubefile; do
-        local base
-        base="$(basename "$cubefile")"
-        if [[ "$base" != "dlog_m_to_rec709.cube" ]]; then
-            echo "$cubefile"
-            return 0
-        fi
-    done < <(find "$dir" -maxdepth 1 -name "*.cube" -print0 2>/dev/null | sort -z)
-    return 1
-}
-
-if [[ -n "$LUT_FILE" ]]; then
-    if [[ ! -f "$LUT_FILE" ]]; then
-        err "LUT 文件不存在: $LUT_FILE"
-        exit 1
-    fi
-    LUT_PATH="$(cd "$(dirname "$LUT_FILE")" && pwd)/$(basename "$LUT_FILE")"
-elif LUT_PATH="$(find_official_lut "$DATA_DIR")"; then
-    info "LUT: $(basename "$LUT_PATH")"
-elif LUT_PATH="$(find_official_lut "$SCRIPT_DIR")"; then
-    info "LUT: $(basename "$LUT_PATH")"
-else
-    err "未找到 LUT 文件"
-    err "请从 https://www.dji.com/lut 下载你机型的 .cube 文件"
-    err "放到 $DATA_DIR/ 目录下，或使用 --lut 指定路径"
-    exit 1
 fi
 
 # ── 收集文件列表 ────────────────────────────────────────
