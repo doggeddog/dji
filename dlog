@@ -31,8 +31,8 @@ DEFAULT_PRESET="vivid"
 
 # ── 默认参数 ────────────────────────────────────────────
 CODEC="h265"
-QUALITY=22
-BITRATE=""
+QUALITY=""
+BITRATE="100M"        # 默认 100Mbps，与 Mavic 4 Pro 原始码率一致
 LUT_FILE=""
 LUT_PRESET=""
 OUTPUT_DIR=""
@@ -79,8 +79,8 @@ LUT 预设:                                        快捷参数
   --lut <文件.cube>          使用自定义 LUT 文件
   --list                     列出可用的 LUT 文件
   -c, --codec <编码>         h264/h265/prores (默认: h265)
-  -q, --quality <数字>       质量 (默认: 22, 越小越好)
-  -b, --bitrate <码率>       固定码率, 如 30M
+  -q, --quality <数字>       质量模式 (CRF, 越小越好, 18=高质量)
+  -b, --bitrate <码率>       固定码率 (默认: 100M, 与原始画质一致)
   -o, --output-dir <目录>    输出目录
   -s, --suffix <后缀>        输出后缀 (默认: _rec709)
   -j, --parallel <数>        并行数 (默认: 1)
@@ -364,7 +364,13 @@ echo -e "${BOLD}dlog${NC} — DJI D-Log → Rec.709"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 info "文件: ${TOTAL} 个"
 info "LUT:  $(basename "$LUT_PATH")"
-info "编码: ${CODEC} | 质量: ${QUALITY}"
+if [[ -n "$BITRATE" ]]; then
+    info "编码: ${CODEC} | 码率: ${BITRATE}"
+elif [[ -n "$QUALITY" ]]; then
+    info "编码: ${CODEC} | 质量: ${QUALITY}"
+else
+    info "编码: ${CODEC}"
+fi
 $DRY_RUN && warn "试运行 — 不会实际转换"
 
 FAIL=0
